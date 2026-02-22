@@ -6,66 +6,49 @@ Loaded 25 pairs.
 
 Tracking 45 unique tickers across 25 pairs.
 
-Warning: could not reconcile Alpaca positions: HTTPSConnectionPool(host='paper-api.alpaca.markets', port=443): Max retries exceeded with url: /v2/positions (Caused by NameResolutionError("HTTPSConnection(host='paper-api.alpaca.markets', port=443): Failed to resolve 'paper-api.alpaca.markets' ([Errno 8] nodename nor servname provided, or not known)"))
+Alpaca has open positions in: AWK, CNP
+  Reconciled AWK/CNP → SHORT SPREAD
+Alpaca account — equity: $99,167.20, cash: $113,057.60
 
-[2026-02-19 09:33:29] Tick #1
-  Data fetch failed: HTTPSConnectionPool(host='data.alpaca.markets', port=443): Max retries exceeded with url: /v2/stocks/bars?start=2026-02-14T09%3A17%3A29.803604%2B00%3A00&end=2026-02-19T09%3A17%3A29.803604%2B00%3A00&timeframe=5Min&feed=sip&symbols=AGCO%2CAM%2CAPPF%2CAVT%2CAWK%2CBAX%2CBC%2CCMS%2CCNP%2CDBX%2CDHI%2CDTM%2CEME%2CENTG%2CEQT%2CEVR%2CEVRG%2CFE%2CFITB%2CFLG%2CFND%2CFOX%2CFOXA%2CHLT%2CKEY%2CLNT%2CLNTH%2CLSCC%2CMLM%2CMTN%2CPCAR%2CPHM%2CPPL%2CRRC%2CRRX%2CSF%2CSWK%2CSYNA%2CTKR%2CTRGP%2CTTC%2CUMBF%2CUSB%2CVLY%2CVMC&limit=10000 (Caused by NameResolutionError("HTTPSConnection(host='data.alpaca.markets', port=443): Failed to resolve 'data.alpaca.markets' ([Errno 8] nodename nor servname provided, or not known)"))
-[2026-02-19 11:04:09] Tick #2
-  >>> ENTER_SHORT_SPREAD: AWK/CNP @ z=+2.13
-      BUY  120 shares of CNP @ $41.55 = $4,986.00
-      SHORT 38 shares of AWK @ $130.44 = $4,956.70
+[2026-02-22 18:16:43] Tick #1
+  >>> ENTER_SHORT_SPREAD: AM/EQT @ z=+2.24
+      BUY  82 shares of EQT @ $60.30 = $4,944.60
+      SHORT 231 shares of AM @ $21.63 = $4,996.53
 
 ======================================================================
-  LIVE SIGNALS — 2026-02-19 11:04:11
+  LIVE SIGNALS — 2026-02-22 18:16:44
 ======================================================================
+
+  PAIR: AM / EQT  (Energy)
+  Z-Score: +2.24
+  Prices: AM = $21.63  |  EQT = $60.30
+  ACTION: SHORT SPREAD
+    SHORT 231 shares of AM @ $21.63 = $4,996.53
+    BUY  82 shares of EQT @ $60.30 = $4,944.60
+    Long:  $4,944.60
+    Short: $4,996.53
+    Net:   $-51.93
+    Entry Z: +2.24  |  Entry time: 2026-02-22 18:16:43
 
   PAIR: AWK / CNP  (Utilities)
-  Z-Score: +2.13
-  Prices: AWK = $130.44  |  CNP = $41.55
+  Z-Score: +0.60
+  Prices: AWK = $129.60  |  CNP = $42.90
   ACTION: SHORT SPREAD
-    SHORT 38 shares of AWK @ $130.44 = $4,956.70
-    BUY  120 shares of CNP @ $41.55 = $4,986.00
-    Long:  $4,986.00
-    Short: $4,956.70
-    Net:   $29.30
-    Entry Z: +2.13  |  Entry time: 2026-02-19 11:04:09
+    SHORT 38 shares of AWK @ $129.60 = $4,924.80
+    BUY  116 shares of CNP @ $42.90 = $4,976.66
+    Long:  $4,976.66
+    Short: $4,924.80
+    Net:   $51.86
+    Entry Z: +0.00  |  Entry time: reconciled
 
 ======================================================================
   PORTFOLIO SUMMARY
 ======================================================================
-  Active: 1  |  Watching: 0  |  Quiet: 24
-  Total long:   $4,986.00
-  Total short:  $4,956.70
-  Gross exposure: $9,942.70 / $10,000 max
-  Net exposure:   $29.30 (target: $0)
-  Account size:   $100,000
-======================================================================
-
-[2026-02-19 11:06:47] Tick #3
-
-======================================================================
-  LIVE SIGNALS — 2026-02-19 11:06:48
-======================================================================
-
-  PAIR: AWK / CNP  (Utilities)
-  Z-Score: +2.13
-  Prices: AWK = $130.44  |  CNP = $41.55
-  ACTION: SHORT SPREAD
-    SHORT 38 shares of AWK @ $130.44 = $4,956.70
-    BUY  120 shares of CNP @ $41.55 = $4,986.00
-    Long:  $4,986.00
-    Short: $4,956.70
-    Net:   $29.30
-    Entry Z: +2.13  |  Entry time: 2026-02-19 11:04:09
-
-======================================================================
-  PORTFOLIO SUMMARY
-======================================================================
-  Active: 1  |  Watching: 0  |  Quiet: 24
-  Total long:   $4,986.00
-  Total short:  $4,956.70
-  Gross exposure: $9,942.70 / $10,000 max
-  Net exposure:   $29.30 (target: $0)
+  Active: 2  |  Watching: 0  |  Quiet: 23
+  Total long:   $9,921.26
+  Total short:  $9,921.33
+  Gross exposure: $19,842.59 / $10,000 max
+  Net exposure:   $-0.07 (target: $0)
   Account size:   $100,000
 ======================================================================
 
