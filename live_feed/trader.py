@@ -371,102 +371,110 @@ def run_trader() -> None:
         log(f"Warning: could not reconcile Alpaca positions: {e}\n")
 
     tick = 0
+    consecutive_errors = 0
     while True:
         tick += 1
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log(f"[{now}] Tick #{tick}")
 
-        # Fetch latest 5-min data
         try:
+            # Fetch latest 5-min data
             prices = fetch_5min_data(all_tickers)
-        except Exception as e:
-            log(f"  Data fetch failed: {e}")
-            time.sleep(INTERVAL_SECONDS)
-            continue
 
-        if prices.empty:
-            log("  No data (market may be closed)")
-            time.sleep(INTERVAL_SECONDS)
-            continue
-
-        # Compute z-scores and update signals
-        z_scores = {}
-        actions = []
-        for pos in positions:
-            if pos.ticker_a not in prices.columns or pos.ticker_b not in prices.columns:
+            if prices.empty:
+                log("  No data (market may be closed)")
+                time.sleep(INTERVAL_SECONDS)
+                consecutive_errors = 0
                 continue
 
-            spread = prices[pos.ticker_a] - pos.hedge_ratio * prices[pos.ticker_b]
-            z = compute_zscore(spread)
-            label = f"{pos.ticker_a}/{pos.ticker_b}"
-            z_scores[label] = z
+            # Compute z-scores and update signals
+            z_scores = {}
+            actions = []
+            for pos in positions:
+                if pos.ticker_a not in prices.columns or pos.ticker_b not in prices.columns:
+                    continue
 
-            action = pos.update(z, now)
-            if action:
-                # Add share counts to the action
-                price_a = prices[pos.ticker_a].iloc[-1] if pos.ticker_a in prices.columns else 0
-                price_b = prices[pos.ticker_b].iloc[-1] if pos.ticker_b in prices.columns else 0
-                shares_a = compute_shares(price_a, MAX_EXPOSURE_PER_PAIR)
-                shares_b = compute_shares(price_b, MAX_EXPOSURE_PER_PAIR)
-                action["shares_a"] = shares_a
-                action["shares_b"] = shares_b
-                action["price_a"] = price_a
-                action["price_b"] = price_b
+                spread = prices[pos.ticker_a] - pos.hedge_ratio * prices[pos.ticker_b]
+                z = compute_zscore(spread)
+                label = f"{pos.ticker_a}/{pos.ticker_b}"
+                z_scores[label] = z
 
-                actions.append(action)
-                log_signal(action)
+                action = pos.update(z, now)
+                if action:
+                    # Add share counts to the action
+                    price_a = prices[pos.ticker_a].iloc[-1] if pos.ticker_a in prices.columns else 0
+                    price_b = prices[pos.ticker_b].iloc[-1] if pos.ticker_b in prices.columns else 0
+                    shares_a = compute_shares(price_a, MAX_EXPOSURE_PER_PAIR)
+                    shares_b = compute_shares(price_b, MAX_EXPOSURE_PER_PAIR)
+                    action["shares_a"] = shares_a
+                    action["shares_b"] = shares_b
+                    action["price_a"] = price_a
+                    action["price_b"] = price_b
 
-                # Execute paper trade via Alpaca
-                try:
-                    execute_trade(action)
-                except Exception as e:
-                    log(f"  [ALPACA] Trade execution error: {e}")
+                    actions.append(action)
+                    log_signal(action)
 
-                if action["action"] == "EXIT":
-                    reason = action.get("exit_reason", "UNKNOWN")
-                    bars = action.get("bars_held", "?")
-                    log(f"  >>> EXIT ({reason}): {action['pair']} @ z={z:+.2f} after {bars} bars")
-                    log(f"      Sell {shares_a} shares {pos.ticker_a}, Cover {shares_b} shares {pos.ticker_b}")
-                else:
-                    long_tk = action.get("long", "")
-                    short_tk = action.get("short", "")
-                    long_sh = shares_a if long_tk == pos.ticker_a else shares_b
-                    short_sh = shares_b if short_tk == pos.ticker_b else shares_a
-                    long_px = price_a if long_tk == pos.ticker_a else price_b
-                    short_px = price_b if short_tk == pos.ticker_b else price_a
-                    log(f"  >>> {action['action']}: {action['pair']} @ z={z:+.2f}")
-                    log(f"      BUY  {long_sh} shares of {long_tk} @ ${long_px:.2f} = ${long_sh * long_px:,.2f}")
-                    log(f"      SHORT {short_sh} shares of {short_tk} @ ${short_px:.2f} = ${short_sh * short_px:,.2f}")
+                    # Execute paper trade via Alpaca
+                    try:
+                        execute_trade(action)
+                    except Exception as e:
+                        log(f"  [ALPACA] Trade execution error: {e}")
 
-        # Get latest prices for share calculations
-        latest_prices = {}
-        for t in all_tickers:
-            if t in prices.columns:
-                latest_prices[t] = prices[t].iloc[-1]
+                    if action["action"] == "EXIT":
+                        reason = action.get("exit_reason", "UNKNOWN")
+                        bars = action.get("bars_held", "?")
+                        log(f"  >>> EXIT ({reason}): {action['pair']} @ z={z:+.2f} after {bars} bars")
+                        log(f"      Sell {shares_a} shares {pos.ticker_a}, Cover {shares_b} shares {pos.ticker_b}")
+                    else:
+                        long_tk = action.get("long", "")
+                        short_tk = action.get("short", "")
+                        long_sh = shares_a if long_tk == pos.ticker_a else shares_b
+                        short_sh = shares_b if short_tk == pos.ticker_b else shares_a
+                        long_px = price_a if long_tk == pos.ticker_a else price_b
+                        short_px = price_b if short_tk == pos.ticker_b else price_a
+                        log(f"  >>> {action['action']}: {action['pair']} @ z={z:+.2f}")
+                        log(f"      BUY  {long_sh} shares of {long_tk} @ ${long_px:.2f} = ${long_sh * long_px:,.2f}")
+                        log(f"      SHORT {short_sh} shares of {short_tk} @ ${short_px:.2f} = ${short_sh * short_px:,.2f}")
 
-        # Print status table
-        table = format_signal_table(positions, z_scores, latest_prices)
-        log(table)
+            # Get latest prices for share calculations
+            latest_prices = {}
+            for t in all_tickers:
+                if t in prices.columns:
+                    latest_prices[t] = prices[t].iloc[-1]
 
-        # Save current positions
-        pos_data = []
-        for pos in positions:
-            label = f"{pos.ticker_a}/{pos.ticker_b}"
-            pos_data.append({
-                "pair": label,
-                "signal": pos.signal,
-                "z_score": z_scores.get(label, 0),
-                "hedge_ratio": pos.hedge_ratio,
-                "sector": pos.sector,
-                "entry_time": pos.entry_time,
-            })
-        pd.DataFrame(pos_data).to_csv(POSITIONS_FILE, index=False)
+            # Print status table
+            table = format_signal_table(positions, z_scores, latest_prices)
+            log(table)
 
-        # Push to GitHub
-        if actions:
-            git_push(f"trade signal tick #{tick} — {now}")
-        else:
-            git_push(f"position update #{tick} — {now}")
+            # Save current positions
+            pos_data = []
+            for pos in positions:
+                label = f"{pos.ticker_a}/{pos.ticker_b}"
+                pos_data.append({
+                    "pair": label,
+                    "signal": pos.signal,
+                    "z_score": z_scores.get(label, 0),
+                    "hedge_ratio": pos.hedge_ratio,
+                    "sector": pos.sector,
+                    "entry_time": pos.entry_time,
+                })
+            pd.DataFrame(pos_data).to_csv(POSITIONS_FILE, index=False)
+
+            # Push to GitHub
+            if actions:
+                git_push(f"trade signal tick #{tick} — {now}")
+            else:
+                git_push(f"position update #{tick} — {now}")
+
+            consecutive_errors = 0
+
+        except Exception as e:
+            consecutive_errors += 1
+            log(f"  ERROR (attempt {consecutive_errors}): {e}")
+            if consecutive_errors >= 5:
+                log(f"  {consecutive_errors} consecutive errors — sleeping 5 min before retry")
+                time.sleep(300)
+            # Keep the loop alive regardless
 
         time.sleep(INTERVAL_SECONDS)
 
