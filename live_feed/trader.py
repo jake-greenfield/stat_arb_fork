@@ -96,8 +96,10 @@ class PairPosition:
                 self.cooldown_remaining -= 1
                 return None
 
-            # Look for entry
-            if z_score <= -ZSCORE_ENTRY:
+            # Look for entry (skip if already past hard stop — would exit immediately)
+            if abs(z_score) >= ZSCORE_HARD_STOP:
+                pass  # z-score too extreme, don't enter
+            elif z_score <= -ZSCORE_ENTRY:
                 self.signal = 1  # long spread: long A, short B
                 self.entry_z = z_score
                 self.entry_time = timestamp
