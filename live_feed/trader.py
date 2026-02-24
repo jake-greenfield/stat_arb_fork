@@ -16,7 +16,8 @@ Usage:
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, time as dtime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +49,7 @@ WATCHLIST_THRESHOLD = 1.75  # only show pairs with |z| >= 1.75
 ZSCORE_HARD_STOP = 3.25    # force exit if |z| blows out past this
 TIME_STOP_BARS = 390       # 5 trading days * 78 bars/day (5-min bars, 6.5hr session)
 COOLDOWN_BARS = 78         # 1 trading day cooldown after hard/time stop
+OPEN_COOLDOWN_MINUTES = 15 # skip new entries for first 15 min after market open (9:30 ET)
 
 
 class PairPosition:
@@ -396,6 +398,14 @@ def run_trader() -> None:
                 consecutive_errors = 0
                 continue
 
+            # Check if we're in the opening cooldown period (first 15 min after 9:30 ET)
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            cooldown_end = now_et.replace(hour=9, minute=30 + OPEN_COOLDOWN_MINUTES, second=0, microsecond=0)
+            in_open_cooldown = market_open <= now_et < cooldown_end
+            if in_open_cooldown:
+                log(f"  Opening cooldown active until 9:{30 + OPEN_COOLDOWN_MINUTES} ET — no new entries")
+
             # Compute z-scores and update signals
             z_scores = {}
             actions = []
@@ -413,6 +423,11 @@ def run_trader() -> None:
                 price_b = prices[pos.ticker_b].iloc[-1] if pos.ticker_b in prices.columns else 0
                 shares_a = compute_shares(price_a, MAX_EXPOSURE_PER_PAIR)
                 shares_b = compute_shares(price_b, MAX_EXPOSURE_PER_PAIR)
+
+                # During opening cooldown, skip flat positions (no new entries)
+                # but still allow exits for active positions
+                if in_open_cooldown and pos.signal == 0:
+                    continue
 
                 action = pos.update(z, now)
                 if action:
