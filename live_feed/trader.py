@@ -42,6 +42,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SIGNALS_FILE = PROJECT_ROOT / "live_feed" / "signals.csv"
 POSITIONS_FILE = PROJECT_ROOT / "live_feed" / "positions.csv"
 OUTPUT_LOG = PROJECT_ROOT / "live_feed" / "trader_output.log"
+STATE_FILE = PROJECT_ROOT / "live_feed" / "position_state.json"
 
 # --- Strategy parameters ---
 ZSCORE_LOOKBACK = 60       # 60 x 5min = 5 hours rolling window
@@ -316,6 +317,54 @@ def save_pair_pnl(positions: list) -> None:
         label = f"{pos.ticker_a}/{pos.ticker_b}"
         rows.append({"pair": label, "consecutive_losses": pos.consecutive_losses})
     pd.DataFrame(rows).to_csv(PNL_FILE, index=False)
+
+
+def save_position_state(positions: list) -> None:
+    """Persist full PairPosition state to disk as JSON."""
+    state = {}
+    for pos in positions:
+        label = f"{pos.ticker_a}/{pos.ticker_b}"
+        state[label] = {
+            "signal": pos.signal,
+            "entry_z": pos.entry_z,
+            "entry_time": pos.entry_time,
+            "bars_held": pos.bars_held,
+            "cooldown_remaining": pos.cooldown_remaining,
+            "entry_shares_a": pos.entry_shares_a,
+            "entry_shares_b": pos.entry_shares_b,
+            "entry_price_a": pos.entry_price_a,
+            "entry_price_b": pos.entry_price_b,
+            "consecutive_losses": pos.consecutive_losses,
+            "consecutive_entry_failures": pos.consecutive_entry_failures,
+        }
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def load_position_state() -> dict:
+    """Load persisted PairPosition state from disk. Returns {pair_label: state_dict}."""
+    if not STATE_FILE.exists():
+        return {}
+    try:
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def restore_position_from_state(pos, saved: dict) -> None:
+    """Restore a PairPosition's fields from saved state."""
+    pos.signal = saved.get("signal", 0)
+    pos.entry_z = saved.get("entry_z")
+    pos.entry_time = saved.get("entry_time")
+    pos.bars_held = saved.get("bars_held", 0)
+    pos.cooldown_remaining = saved.get("cooldown_remaining", 0)
+    pos.entry_shares_a = saved.get("entry_shares_a", 0)
+    pos.entry_shares_b = saved.get("entry_shares_b", 0)
+    pos.entry_price_a = saved.get("entry_price_a", 0.0)
+    pos.entry_price_b = saved.get("entry_price_b", 0.0)
+    pos.consecutive_losses = saved.get("consecutive_losses", 0)
+    pos.consecutive_entry_failures = saved.get("consecutive_entry_failures", 0)
 
 
 def send_telegram(message: str) -> None:
@@ -647,7 +696,22 @@ def run_trader() -> None:
     all_tickers = sorted(all_tickers)
     log(f"Tracking {len(all_tickers)} unique tickers across {len(positions)} pairs.\n")
 
-    # Position reconciliation: sync Alpaca positions into local state
+    # Restore position state: prefer saved state file, fall back to Alpaca reconciliation
+    saved_state = load_position_state()
+    restored_from_file = 0
+
+    if saved_state:
+        log(f"Found saved state for {len(saved_state)} pairs.")
+        for pos in positions:
+            label = f"{pos.ticker_a}/{pos.ticker_b}"
+            if label in saved_state:
+                restore_position_from_state(pos, saved_state[label])
+                if pos.signal != 0:
+                    direction = "LONG SPREAD" if pos.signal == 1 else "SHORT SPREAD"
+                    log(f"  Restored {label} → {direction} (entry_z={pos.entry_z:+.2f}, bars={pos.bars_held})")
+                    restored_from_file += 1
+
+    # Cross-check with Alpaca positions for consistency
     try:
         alpaca_positions = get_positions()
         alpaca_symbols = {p["symbol"]: p for p in alpaca_positions}
@@ -656,25 +720,32 @@ def run_trader() -> None:
         else:
             log("Alpaca: no open positions.")
 
-        # Restore local signal state from Alpaca positions
+        # If no saved state, fall back to Alpaca reconciliation
         reconciled_symbols = set()
-        for pos in positions:
-            a_pos = alpaca_symbols.get(pos.ticker_a)
-            b_pos = alpaca_symbols.get(pos.ticker_b)
-            if a_pos and b_pos:
-                a_qty = float(a_pos["qty"])
-                b_qty = float(b_pos["qty"])
-                if a_qty > 0 and b_qty < 0:
-                    pos.signal = 1  # long A, short B = long spread
-                    pos.entry_time = "reconciled"
-                    pos.entry_z = 0.0
-                    log(f"  Reconciled {pos.ticker_a}/{pos.ticker_b} → LONG SPREAD")
-                    reconciled_symbols.update([pos.ticker_a, pos.ticker_b])
-                elif a_qty < 0 and b_qty > 0:
-                    pos.signal = -1  # short A, long B = short spread
-                    pos.entry_time = "reconciled"
-                    pos.entry_z = 0.0
-                    log(f"  Reconciled {pos.ticker_a}/{pos.ticker_b} → SHORT SPREAD")
+        if restored_from_file == 0:
+            log("No saved state — falling back to Alpaca reconciliation.")
+            for pos in positions:
+                a_pos = alpaca_symbols.get(pos.ticker_a)
+                b_pos = alpaca_symbols.get(pos.ticker_b)
+                if a_pos and b_pos:
+                    a_qty = float(a_pos["qty"])
+                    b_qty = float(b_pos["qty"])
+                    if a_qty > 0 and b_qty < 0:
+                        pos.signal = 1
+                        pos.entry_time = "reconciled"
+                        pos.entry_z = 0.0
+                        log(f"  Reconciled {pos.ticker_a}/{pos.ticker_b} → LONG SPREAD")
+                        reconciled_symbols.update([pos.ticker_a, pos.ticker_b])
+                    elif a_qty < 0 and b_qty > 0:
+                        pos.signal = -1
+                        pos.entry_time = "reconciled"
+                        pos.entry_z = 0.0
+                        log(f"  Reconciled {pos.ticker_a}/{pos.ticker_b} → SHORT SPREAD")
+                        reconciled_symbols.update([pos.ticker_a, pos.ticker_b])
+        else:
+            # Mark symbols from restored positions
+            for pos in positions:
+                if pos.signal != 0:
                     reconciled_symbols.update([pos.ticker_a, pos.ticker_b])
 
         # Close orphaned positions (from removed pairs after a rescan)
@@ -690,14 +761,6 @@ def run_trader() -> None:
             f"cash: ${float(account['cash']):,.2f}\n")
     except Exception as e:
         log(f"Warning: could not reconcile Alpaca positions: {e}\n")
-
-    # Load per-pair P&L state from disk
-    pnl_state = load_pair_pnl()
-    for pos in positions:
-        label = f"{pos.ticker_a}/{pos.ticker_b}"
-        pos.consecutive_losses = pnl_state.get(label, 0)
-        if pos.consecutive_losses >= LOSS_STREAK_CUTOFF:
-            log(f"  {label}: on {pos.consecutive_losses}-loss streak, sizing reduced")
 
     tick = 0
     consecutive_errors = 0
@@ -906,6 +969,9 @@ def run_trader() -> None:
                     "entry_time": pos.entry_time,
                 })
             pd.DataFrame(pos_data).to_csv(POSITIONS_FILE, index=False)
+
+            # Persist full position state for restart recovery
+            save_position_state(positions)
 
             # Push to GitHub
             if actions:
