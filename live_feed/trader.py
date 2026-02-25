@@ -384,7 +384,7 @@ def send_telegram(message: str) -> None:
         print(f"  [TELEGRAM] Failed to send: {e}", flush=True)
 
 
-def alert_trade(action: dict, exposure: float = 0) -> None:
+def alert_trade(action: dict, exposure: float = 0, pnl: float = None) -> None:
     """Send Telegram alert for a trade entry or exit."""
     act = action.get("action", "")
     pair = action.get("pair", "")
@@ -394,10 +394,17 @@ def alert_trade(action: dict, exposure: float = 0) -> None:
         reason = action.get("exit_reason", "UNKNOWN")
         bars = action.get("bars_held", "?")
         emoji = "🛑" if reason == "HARD_STOP" else "⏰" if reason == "TIME_STOP" else "✅"
+        pnl_line = ""
+        if pnl is not None:
+            pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+            entry_cost = action.get("entry_cost", 0)
+            pct = (pnl / entry_cost * 100) if entry_cost > 0 else 0
+            pnl_line = f"\n{pnl_emoji} P&L: ${pnl:+,.2f} ({pct:+.2f}%)"
         msg = (
             f"{emoji} <b>EXIT {pair}</b>\n"
             f"Reason: {reason}\n"
             f"Z-score: {z:+.2f} | Bars held: {bars}"
+            f"{pnl_line}"
         )
     else:
         direction = "LONG" if "LONG" in act else "SHORT"
@@ -904,27 +911,32 @@ def run_trader() -> None:
                         pos.consecutive_entry_failures = 0
 
                     # Track P&L on exits
+                    trade_pnl = None
                     if action["action"] == "EXIT" and pos.entry_price_a > 0:
                         # Compute rough P&L from entry vs exit prices
                         if action.get("signal") == 1:  # was long A, short B
-                            pnl = (price_a - pos.entry_price_a) * pos.entry_shares_a \
+                            trade_pnl = (price_a - pos.entry_price_a) * pos.entry_shares_a \
                                 - (price_b - pos.entry_price_b) * pos.entry_shares_b
                         else:  # was short A, long B
-                            pnl = -(price_a - pos.entry_price_a) * pos.entry_shares_a \
+                            trade_pnl = -(price_a - pos.entry_price_a) * pos.entry_shares_a \
                                 + (price_b - pos.entry_price_b) * pos.entry_shares_b
-                        if pnl < 0:
+                        # Store entry cost for % calculation
+                        entry_cost = pos.entry_price_a * pos.entry_shares_a \
+                            + pos.entry_price_b * pos.entry_shares_b
+                        action["entry_cost"] = entry_cost
+                        if trade_pnl < 0:
                             pos.consecutive_losses += 1
-                            log(f"  [P&L] {label}: loss (${pnl:+,.2f}), streak: {pos.consecutive_losses}")
+                            log(f"  [P&L] {label}: loss (${trade_pnl:+,.2f}), streak: {pos.consecutive_losses}")
                         else:
                             pos.consecutive_losses = 0
-                            log(f"  [P&L] {label}: win (${pnl:+,.2f}), streak reset")
+                            log(f"  [P&L] {label}: win (${trade_pnl:+,.2f}), streak reset")
                         pos.entry_price_a = 0.0
                         pos.entry_price_b = 0.0
                         save_pair_pnl(positions)
 
                     actions.append(action)
                     log_signal(action)
-                    alert_trade(action, exposure)
+                    alert_trade(action, exposure, pnl=trade_pnl)
                     record_slippage(action, price_a, price_b)
 
                     if action["action"] == "EXIT":
