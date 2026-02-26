@@ -771,6 +771,7 @@ def run_trader() -> None:
 
     tick = 0
     consecutive_errors = 0
+    last_trading_date = None  # track date to reset entry failures daily
     while True:
         tick += 1
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -786,8 +787,29 @@ def run_trader() -> None:
                 consecutive_errors = 0
                 continue
 
-            # Check if we're in the opening cooldown period (first 15 min after 9:30 ET)
+            # Check market hours — only trade during regular session (9:30-16:00 ET)
             now_et = datetime.now(ZoneInfo("America/New_York"))
+            market_open_time = dtime(9, 30)
+            market_close_time = dtime(16, 0)
+            market_is_open = market_open_time <= now_et.time() <= market_close_time and now_et.weekday() < 5
+
+            if not market_is_open:
+                log("  Market closed — skipping signal processing")
+                save_position_state(positions)
+                time.sleep(INTERVAL_SECONDS)
+                consecutive_errors = 0
+                continue
+
+            # Reset consecutive entry failures at start of each trading day
+            today_str = now_et.strftime("%Y-%m-%d")
+            if last_trading_date != today_str:
+                last_trading_date = today_str
+                for pos in positions:
+                    if pos.consecutive_entry_failures > 0:
+                        log(f"  [RESET] {pos.ticker_a}/{pos.ticker_b} entry failures reset (was {pos.consecutive_entry_failures})")
+                        pos.consecutive_entry_failures = 0
+
+            # Check if we're in the opening cooldown period (first 15 min after 9:30 ET)
             market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
             cooldown_end = now_et.replace(hour=9, minute=30 + OPEN_COOLDOWN_MINUTES, second=0, microsecond=0)
             in_open_cooldown = market_open <= now_et < cooldown_end
