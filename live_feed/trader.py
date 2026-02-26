@@ -419,8 +419,8 @@ def alert_trade(action: dict, exposure: float = 0, pnl: float = None) -> None:
 
 
 def alert_risk_block(pair: str, reason: str) -> None:
-    """Send Telegram alert when a risk gate blocks an entry."""
-    send_telegram(f"⚠️ <b>BLOCKED</b> {pair}\n{reason}")
+    """Log risk block (no Telegram — too noisy)."""
+    pass  # logged to console/file only
 
 
 def alert_disabled(pair: str) -> None:
