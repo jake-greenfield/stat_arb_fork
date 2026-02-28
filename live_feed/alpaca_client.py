@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 from alpaca.data import StockHistoricalDataClient
-from alpaca.data.enums import DataFeed
+from alpaca.data.enums import DataFeed  # IEX = free real-time, SIP = 15-min delayed on free tier
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
@@ -50,7 +50,7 @@ def fetch_5min_data_alpaca(tickers: list[str]) -> pd.DataFrame:
     Returns a DataFrame with DatetimeIndex and one column per ticker (close prices),
     matching the format previously returned by yfinance.
     """
-    end = datetime.now() - timedelta(minutes=16)  # 15-min delay for free SIP access
+    end = datetime.now()
     start = end - timedelta(days=5)
 
     request = StockBarsRequest(
@@ -58,7 +58,7 @@ def fetch_5min_data_alpaca(tickers: list[str]) -> pd.DataFrame:
         timeframe=TimeFrame(5, TimeFrameUnit.Minute),
         start=start,
         end=end,
-        feed=DataFeed.SIP,
+        feed=DataFeed.IEX,
     )
 
     bars = _get_data_client().get_stock_bars(request)
@@ -248,7 +248,7 @@ def fetch_5min_data_alpaca_batch(
     Fetch 5-min bars for a large set of tickers in batches.
     Returns DataFrame with DatetimeIndex x ticker columns (close prices).
     """
-    end = datetime.now() - timedelta(minutes=16)  # 15-min delay for free tier
+    end = datetime.now()
     start = end - timedelta(days=days)
     all_frames = []
 
@@ -260,7 +260,7 @@ def fetch_5min_data_alpaca_batch(
                 timeframe=TimeFrame(5, TimeFrameUnit.Minute),
                 start=start,
                 end=end,
-                feed=DataFeed.SIP,
+                feed=DataFeed.IEX,
             )
             bars = _get_data_client().get_stock_bars(request)
             bar_df = bars.df
