@@ -58,6 +58,7 @@ TIME_STOP_BARS = 390       # 5 trading days * 78 bars/day (5-min bars, 6.5hr ses
 COOLDOWN_BARS = 78         # 1 trading day cooldown after hard/time stop
 OPEN_COOLDOWN_MINUTES = 15 # skip new entries for first 15 min after market open (9:30 ET)
 MAX_ENTRY_FAILURES = 3     # disable pair after this many consecutive failed entries
+TRAILING_STOP_PCT = 0.02   # exit if P&L drops 2% of entry cost from peak
 
 # --- Risk management ---
 MAX_GROSS_EXPOSURE = 100_000   # cap total gross exposure at 1.0x capital
@@ -97,6 +98,8 @@ class PairPosition:
         self.entry_price_b = 0.0
         self.consecutive_losses = 0    # consecutive losing trades
         self.allocated_exposure = BASE_EXPOSURE_PER_PAIR  # vol-adjusted per-leg $
+        self.peak_pnl = 0.0            # peak unrealized P&L since entry (trailing stop)
+        self._trailing_stop_triggered = False
 
     def _force_exit(self, z_score: float, reason: str) -> dict:
         """Build a forced exit action and reset state."""
@@ -117,9 +120,36 @@ class PairPosition:
         self.bars_held = 0
         self.entry_shares_a = 0
         self.entry_shares_b = 0
-        if reason in ("HARD_STOP", "TIME_STOP"):
+        self.peak_pnl = 0.0
+        self._trailing_stop_triggered = False
+        if reason in ("HARD_STOP", "TIME_STOP", "TRAILING_STOP"):
             self.cooldown_remaining = COOLDOWN_BARS
         return action
+
+    def compute_unrealized_pnl(self, price_a: float, price_b: float) -> float:
+        """Compute current unrealized P&L for an active position."""
+        if self.signal == 0 or self.entry_price_a == 0:
+            return 0.0
+        if self.signal == 1:  # long A, short B
+            return (price_a - self.entry_price_a) * self.entry_shares_a \
+                - (price_b - self.entry_price_b) * self.entry_shares_b
+        else:  # short A, long B
+            return -(price_a - self.entry_price_a) * self.entry_shares_a \
+                + (price_b - self.entry_price_b) * self.entry_shares_b
+
+    def update_trailing_stop(self, price_a: float, price_b: float) -> None:
+        """Update peak P&L and set trailing stop flag if drawdown exceeds threshold."""
+        if self.signal == 0 or self.entry_price_a == 0:
+            return
+        pnl = self.compute_unrealized_pnl(price_a, price_b)
+        self.peak_pnl = max(self.peak_pnl, pnl)
+        entry_cost = self.entry_price_a * self.entry_shares_a \
+            + self.entry_price_b * self.entry_shares_b
+        if entry_cost <= 0:
+            return
+        drawdown = self.peak_pnl - pnl
+        if drawdown > entry_cost * TRAILING_STOP_PCT:
+            self._trailing_stop_triggered = True
 
     def update(self, z_score: float, timestamp: str) -> dict | None:
         """
@@ -143,6 +173,7 @@ class PairPosition:
                 self.entry_z = z_score
                 self.entry_time = timestamp
                 self.bars_held = 0
+                self.peak_pnl = 0.0
                 action = {
                     "action": "ENTER_LONG_SPREAD",
                     "long": self.ticker_a,
@@ -153,6 +184,7 @@ class PairPosition:
                 self.entry_z = z_score
                 self.entry_time = timestamp
                 self.bars_held = 0
+                self.peak_pnl = 0.0
                 action = {
                     "action": "ENTER_SHORT_SPREAD",
                     "long": self.ticker_b,
@@ -168,6 +200,10 @@ class PairPosition:
             # Time stop: held too long
             elif self.bars_held >= TIME_STOP_BARS:
                 action = self._force_exit(z_score, "TIME_STOP")
+
+            # Trailing stop: P&L dropped too far from peak (checked via update_trailing_stop)
+            elif self._trailing_stop_triggered:
+                action = self._force_exit(z_score, "TRAILING_STOP")
 
             # Normal mean-reversion exit
             elif abs(z_score) <= ZSCORE_EXIT:
@@ -337,6 +373,7 @@ def save_position_state(positions: list) -> None:
             "entry_price_b": pos.entry_price_b,
             "consecutive_losses": pos.consecutive_losses,
             "consecutive_entry_failures": pos.consecutive_entry_failures,
+            "peak_pnl": pos.peak_pnl,
         }
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
@@ -366,6 +403,7 @@ def restore_position_from_state(pos, saved: dict) -> None:
     pos.entry_price_b = saved.get("entry_price_b", 0.0)
     pos.consecutive_losses = saved.get("consecutive_losses", 0)
     pos.consecutive_entry_failures = saved.get("consecutive_entry_failures", 0)
+    pos.peak_pnl = saved.get("peak_pnl", 0.0)
 
 
 def send_telegram(message: str) -> None:
@@ -932,6 +970,10 @@ def run_trader() -> None:
 
                 price_a = prices[pos.ticker_a].iloc[-1]
                 price_b = prices[pos.ticker_b].iloc[-1]
+
+                # Update trailing stop tracking for active positions
+                if pos.signal != 0:
+                    pos.update_trailing_stop(price_a, price_b)
 
                 # Vol-adjusted exposure per leg
                 exposure = compute_vol_adjusted_exposure(spread, all_spread_vols)
