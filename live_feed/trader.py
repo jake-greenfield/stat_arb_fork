@@ -49,8 +49,8 @@ ZSCORE_LOOKBACK = 60       # 60 x 5min = 5 hours rolling window
 ZSCORE_ENTRY = 2.0
 ZSCORE_EXIT = 0.5
 TOTAL_CAPITAL = 100_000    # total account size (Alpaca paper)
-MAX_PAIRS = 25
-BASE_EXPOSURE_PER_PAIR = 5_000  # base $5,000 per leg, adjusted by volatility
+MAX_PAIRS = 8
+BASE_EXPOSURE_PER_PAIR = 10_000  # base $10,000 per leg, adjusted by volatility
 WATCHLIST_THRESHOLD = 1.75  # only show pairs with |z| >= 1.75
 ZSCORE_HARD_STOP = 3.25    # force exit if |z| blows out past this
 TIME_STOP_BARS = 390       # 5 trading days * 78 bars/day (5-min bars, 6.5hr session)

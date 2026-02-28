@@ -30,9 +30,9 @@ def _compute_pair_metrics(
     prices_b: np.ndarray,
 ) -> dict | None:
     """Run cointegration + stationarity tests on a single pair."""
-    # Engle-Granger cointegration
+    # Engle-Granger cointegration (tight filter: p < 0.01)
     _, pvalue, _ = coint(prices_a, prices_b)
-    if pvalue > 0.05:
+    if pvalue > 0.01:
         return None
 
     # Hedge ratio via OLS
@@ -40,13 +40,15 @@ def _compute_pair_metrics(
     hedge_ratio = model.params[1]
     if abs(hedge_ratio) < 0.1 or abs(hedge_ratio) > 10:
         return None  # unrealistic hedge ratio
+    if model.rsquared < 0.80:
+        return None  # weak relationship
 
     # Spread
     spread = prices_a - hedge_ratio * prices_b
 
-    # ADF test on spread (must be stationary)
+    # ADF test on spread (must be stationary, tight filter: p < 0.01)
     adf_stat, adf_pval, *_ = adfuller(spread, maxlag=20)
-    if adf_pval > 0.05:
+    if adf_pval > 0.01:
         return None
 
     # Spread characteristics
@@ -64,6 +66,8 @@ def _compute_pair_metrics(
     if beta_ar >= 0:
         return None  # not mean-reverting
     half_life = -np.log(2) / beta_ar
+    if half_life > 30:
+        return None  # too slow to mean-revert for intraday trading
 
     # Current z-score
     lookback = min(60, len(spread) // 2)
@@ -298,8 +302,8 @@ def run_scan() -> list[dict]:
 
     top_pairs = scan_pairs(
         prices, sectors,
-        max_pairs=25,
-        max_per_sector=4,
+        max_pairs=8,
+        max_per_sector=2,
     )
 
     # Save top_pairs.txt
