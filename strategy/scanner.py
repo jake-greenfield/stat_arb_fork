@@ -30,9 +30,9 @@ def _compute_pair_metrics(
     prices_b: np.ndarray,
 ) -> dict | None:
     """Run cointegration + stationarity tests on a single pair."""
-    # Engle-Granger cointegration (tight filter: p < 0.01)
+    # Engle-Granger cointegration (tight filter: p < 0.02)
     _, pvalue, _ = coint(prices_a, prices_b)
-    if pvalue > 0.01:
+    if pvalue > 0.02:
         return None
 
     # Hedge ratio via OLS
@@ -40,15 +40,15 @@ def _compute_pair_metrics(
     hedge_ratio = model.params[1]
     if abs(hedge_ratio) < 0.1 or abs(hedge_ratio) > 10:
         return None  # unrealistic hedge ratio
-    if model.rsquared < 0.80:
+    if model.rsquared < 0.60:
         return None  # weak relationship
 
     # Spread
     spread = prices_a - hedge_ratio * prices_b
 
-    # ADF test on spread (must be stationary, tight filter: p < 0.01)
+    # ADF test on spread (must be stationary, tight filter: p < 0.02)
     adf_stat, adf_pval, *_ = adfuller(spread, maxlag=20)
-    if adf_pval > 0.01:
+    if adf_pval > 0.02:
         return None
 
     # Spread characteristics
@@ -293,8 +293,8 @@ def run_scan() -> list[dict]:
     tickers_with_sector = [t for t in all_tickers if t in sectors]
     log(f"  {len(tickers_with_sector)} tickers have sector data.")
 
-    log("Fetching 5-minute price data from Alpaca (last 5 days)...")
-    prices = fetch_5min_data_alpaca_batch(tickers_with_sector, days=5)
+    log("Fetching 5-minute price data from Alpaca (last 10 days)...")
+    prices = fetch_5min_data_alpaca_batch(tickers_with_sector, days=10)
     min_bars = 100
     valid_cols = [c for c in prices.columns if prices[c].notna().sum() >= min_bars]
     prices = prices[valid_cols]
