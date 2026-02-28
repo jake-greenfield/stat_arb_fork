@@ -282,6 +282,21 @@ def fetch_5min_data_alpaca_batch(
     return pivot
 
 
+def cancel_all_orders() -> int:
+    """Cancel all open orders. Returns number of orders cancelled."""
+    try:
+        client = _get_trading_client()
+        client.cancel_orders()
+        # Brief pause for cancellations to process
+        time.sleep(1)
+        orders = client.get_orders()
+        # If there are still open orders, they're being cancelled
+        return len(orders)
+    except Exception as e:
+        print(f"  [ALPACA] Cancel all orders failed: {e}", flush=True)
+        return -1
+
+
 def get_positions() -> list[dict]:
     """Fetch all current Alpaca positions."""
     positions = _get_trading_client().get_all_positions()

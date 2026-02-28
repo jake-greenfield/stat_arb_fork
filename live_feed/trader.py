@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 from live_feed.alpaca_client import (
+    cancel_all_orders,
     execute_trade,
     fetch_5min_data_alpaca,
     get_account_info,
@@ -678,6 +679,64 @@ def git_push(msg: str) -> None:
         pass
 
 
+def _seconds_until_market_open() -> int:
+    """Calculate seconds until next market open (9:30 ET, next weekday)."""
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    target = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+
+    # If it's before 9:30 on a weekday, open is today
+    if now_et.weekday() < 5 and now_et < target:
+        delta = (target - now_et).total_seconds()
+        return max(int(delta), 60)
+
+    # Otherwise, next weekday
+    days_ahead = 1
+    next_day = now_et + pd.Timedelta(days=1)
+    while next_day.weekday() >= 5:  # skip Saturday/Sunday
+        next_day += pd.Timedelta(days=1)
+        days_ahead += 1
+
+    target = (now_et + pd.Timedelta(days=days_ahead)).replace(
+        hour=9, minute=30, second=0, microsecond=0
+    )
+    delta = (target - now_et).total_seconds()
+    return max(int(delta), 60)
+
+
+def _maybe_run_weekly_rescan(last_rescan_date: str | None) -> str | None:
+    """Run pair rescan on Sunday night (20:00 ET) or if never run. Returns new date or same."""
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    today_str = now_et.strftime("%Y-%m-%d")
+
+    if last_rescan_date == today_str:
+        return last_rescan_date  # already ran today
+
+    # Run on Sunday evening (day 6) after 20:00 ET
+    if now_et.weekday() == 6 and now_et.hour >= 20:
+        log("=== WEEKLY PAIR RESCAN (Sunday night) ===")
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "strategy.scanner"],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode == 0:
+                log("Rescan completed successfully.")
+                if result.stdout:
+                    # Log last few lines of output
+                    for line in result.stdout.strip().split("\n")[-5:]:
+                        log(f"  {line}")
+            else:
+                log(f"Rescan failed: {result.stderr[:500]}")
+        except Exception as e:
+            log(f"Rescan error: {e}")
+        return today_str
+
+    return last_rescan_date
+
+
 def run_trader() -> None:
     """Main 5-minute trading loop."""
     # Clear output log on startup
@@ -717,6 +776,13 @@ def run_trader() -> None:
                     direction = "LONG SPREAD" if pos.signal == 1 else "SHORT SPREAD"
                     log(f"  Restored {label} → {direction} (entry_z={pos.entry_z:+.2f}, bars={pos.bars_held})")
                     restored_from_file += 1
+
+    # Cancel any stale orders from previous session before reconciling
+    try:
+        cancel_all_orders()
+        log("Cancelled all stale open orders.")
+    except Exception as e:
+        log(f"Warning: could not cancel stale orders: {e}")
 
     # Cross-check with Alpaca positions for consistency
     try:
@@ -772,6 +838,7 @@ def run_trader() -> None:
     tick = 0
     consecutive_errors = 0
     last_trading_date = None  # track date to reset entry failures daily
+    last_rescan_date = None   # track weekly rescan
     while True:
         tick += 1
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -783,7 +850,16 @@ def run_trader() -> None:
 
             if prices.empty:
                 log("  No data (market may be closed)")
-                time.sleep(INTERVAL_SECONDS)
+                # If outside market hours, sleep until next open
+                now_et_check = datetime.now(ZoneInfo("America/New_York"))
+                if not (dtime(9, 30) <= now_et_check.time() <= dtime(16, 0) and now_et_check.weekday() < 5):
+                    sleep_secs = _seconds_until_market_open()
+                    hours = sleep_secs // 3600
+                    mins = (sleep_secs % 3600) // 60
+                    log(f"  Sleeping {hours}h {mins}m until next market open")
+                    time.sleep(sleep_secs)
+                else:
+                    time.sleep(INTERVAL_SECONDS)
                 consecutive_errors = 0
                 continue
 
@@ -794,9 +870,21 @@ def run_trader() -> None:
             market_is_open = market_open_time <= now_et.time() <= market_close_time and now_et.weekday() < 5
 
             if not market_is_open:
-                log("  Market closed — skipping signal processing")
+                # Check for weekly rescan (Sunday 20:00 ET)
+                last_rescan_date = _maybe_run_weekly_rescan(last_rescan_date)
+                if last_rescan_date and last_rescan_date == now_et.strftime("%Y-%m-%d"):
+                    # Rescan just ran — reload pairs
+                    new_configs = load_pairs()
+                    if new_configs and len(new_configs) != len(pair_configs):
+                        log(f"Rescan produced {len(new_configs)} pairs (was {len(pair_configs)}). Will reload on next startup.")
+
+                # Smart sleep: wait until next market open instead of 60s ticks
+                sleep_secs = _seconds_until_market_open()
+                hours = sleep_secs // 3600
+                mins = (sleep_secs % 3600) // 60
+                log(f"  Market closed — sleeping {hours}h {mins}m until next open")
                 save_position_state(positions)
-                time.sleep(INTERVAL_SECONDS)
+                time.sleep(sleep_secs)
                 consecutive_errors = 0
                 continue
 
