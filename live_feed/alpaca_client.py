@@ -248,7 +248,7 @@ def fetch_5min_data_alpaca_batch(
     Fetch 5-min bars for a large set of tickers in batches.
     Returns DataFrame with DatetimeIndex x ticker columns (close prices).
     """
-    end = datetime.now()
+    end = datetime.now() - timedelta(minutes=16)  # 15-min delay for free tier
     start = end - timedelta(days=days)
     all_frames = []
 
@@ -260,6 +260,7 @@ def fetch_5min_data_alpaca_batch(
                 timeframe=TimeFrame(5, TimeFrameUnit.Minute),
                 start=start,
                 end=end,
+                feed=DataFeed.SIP,
             )
             bars = _get_data_client().get_stock_bars(request)
             bar_df = bars.df
