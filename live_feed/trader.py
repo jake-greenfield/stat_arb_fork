@@ -1035,6 +1035,16 @@ def run_trader() -> None:
                     action["price_a"] = price_a
                     action["price_b"] = price_b
 
+                    # Map shares correctly to long/short based on action type
+                    if action["action"] == "ENTER_LONG_SPREAD":
+                        # long=A, short=B
+                        action["shares_long"] = shares_a
+                        action["shares_short"] = shares_b
+                    elif action["action"] == "ENTER_SHORT_SPREAD":
+                        # long=B, short=A — must swap so execute_trade gets correct counts
+                        action["shares_long"] = shares_b
+                        action["shares_short"] = shares_a
+
                     # Execute paper trade via Alpaca
                     trade_ok = False
                     try:
