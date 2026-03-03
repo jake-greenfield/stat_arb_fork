@@ -54,9 +54,11 @@ MAX_PAIRS = 8
 BASE_EXPOSURE_PER_PAIR = 10_000  # base $10,000 per leg, adjusted by volatility
 WATCHLIST_THRESHOLD = 1.75  # only show pairs with |z| >= 1.75
 ZSCORE_HARD_STOP = 3.25    # force exit if |z| blows out past this
-TIME_STOP_BARS = 390       # 5 trading days * 78 bars/day (5-min bars, 6.5hr session)
+TIME_STOP_BARS = 78        # 1 trading day (6.5hr session at 5-min bars) — intraday only
 COOLDOWN_BARS = 78         # 1 trading day cooldown after hard/time stop
 OPEN_COOLDOWN_MINUTES = 15 # skip new entries for first 15 min after market open (9:30 ET)
+EOD_CLOSE_TIME = dtime(15, 45)   # force exit all positions at 3:45 PM ET
+EOD_NO_ENTRY_TIME = dtime(15, 30) # block new entries after 3:30 PM ET
 MAX_ENTRY_FAILURES = 3     # disable pair after this many consecutive failed entries
 TRAILING_STOP_PCT = 0.02   # exit if P&L drops 2% of entry cost from peak
 
@@ -935,12 +937,50 @@ def run_trader() -> None:
                         log(f"  [RESET] {pos.ticker_a}/{pos.ticker_b} entry failures reset (was {pos.consecutive_entry_failures})")
                         pos.consecutive_entry_failures = 0
 
+            # End-of-day: force exit all positions at 3:45 PM ET to avoid overnight risk
+            if now_et.time() >= EOD_CLOSE_TIME:
+                eod_exits = 0
+                for pos in positions:
+                    if pos.signal != 0:
+                        label = f"{pos.ticker_a}/{pos.ticker_b}"
+                        z = 0.0  # z-score irrelevant for EOD forced close
+                        action = pos._force_exit(z, "EOD_CLOSE")
+                        action.update({
+                            "pair": label,
+                            "hedge_ratio": pos.hedge_ratio,
+                            "z_score": z,
+                            "timestamp": now,
+                            "sector": pos.sector,
+                        })
+                        try:
+                            execute_trade(action)
+                        except Exception as e:
+                            log(f"  [ALPACA] EOD close error for {label}: {e}")
+                        log(f"  >>> EOD CLOSE: {label}")
+                        eod_exits += 1
+                if eod_exits > 0:
+                    log(f"  [EOD] Force-exited {eod_exits} positions before market close")
+                    save_position_state(positions)
+                    alert_trade({"action": "EOD_CLOSE", "pair": f"{eod_exits} pairs"}, 0, pnl=None)
+                # Sleep until next market open
+                sleep_secs = _seconds_until_market_open()
+                hours = sleep_secs // 3600
+                mins = (sleep_secs % 3600) // 60
+                log(f"  EOD — sleeping {hours}h {mins}m until next open")
+                save_position_state(positions)
+                time.sleep(sleep_secs)
+                consecutive_errors = 0
+                continue
+
             # Check if we're in the opening cooldown period (first 15 min after 9:30 ET)
             market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
             cooldown_end = now_et.replace(hour=9, minute=30 + OPEN_COOLDOWN_MINUTES, second=0, microsecond=0)
             in_open_cooldown = market_open <= now_et < cooldown_end
             if in_open_cooldown:
                 log(f"  Opening cooldown active until 9:{30 + OPEN_COOLDOWN_MINUTES} ET — no new entries")
+
+            # Block new entries after 3:30 PM ET (too close to EOD close)
+            in_eod_no_entry = now_et.time() >= EOD_NO_ENTRY_TIME
 
             # First pass: compute all spread vols for vol-weighting
             spreads = {}
@@ -985,9 +1025,9 @@ def run_trader() -> None:
                 shares_a = compute_shares(price_a, exposure)
                 shares_b = compute_shares(price_b, exposure)
 
-                # During opening cooldown, skip flat positions (no new entries)
+                # During opening cooldown or EOD wind-down, skip flat positions (no new entries)
                 # but still allow exits for active positions
-                if in_open_cooldown and pos.signal == 0:
+                if (in_open_cooldown or in_eod_no_entry) and pos.signal == 0:
                     continue
 
                 # Skip pairs that have failed too many consecutive entries
