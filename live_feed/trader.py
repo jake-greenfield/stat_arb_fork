@@ -76,6 +76,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SLIPPAGE_FILE = Path(__file__).resolve().parent / "slippage.csv"
 DAILY_SUMMARY_SENT = {}        # tracks if summary sent today {date_str: True}
+DAILY_TRADES = []              # accumulates trade dicts for daily recap
 
 
 class PairPosition:
@@ -522,7 +523,8 @@ def record_slippage(
 def send_daily_summary(
     positions: list, z_scores: dict, latest_prices: dict,
 ) -> None:
-    """Send end-of-day summary via Telegram at 4:00 PM ET."""
+    """Send comprehensive end-of-day summary via Telegram at 4:00 PM ET."""
+    global DAILY_TRADES
     now_et = datetime.now(ZoneInfo("America/New_York"))
     today = now_et.strftime("%Y-%m-%d")
 
@@ -533,33 +535,7 @@ def send_daily_summary(
         return
     DAILY_SUMMARY_SENT[today] = True
 
-    # Compute portfolio stats
-    active = []
-    total_unrealized = 0.0
-    for pos in positions:
-        if pos.signal == 0:
-            continue
-        label = f"{pos.ticker_a}/{pos.ticker_b}"
-        z = z_scores.get(label, 0)
-        price_a = latest_prices.get(pos.ticker_a, 0)
-        price_b = latest_prices.get(pos.ticker_b, 0)
-
-        # Rough unrealized P&L
-        if pos.entry_price_a > 0:
-            if pos.signal == 1:
-                pnl = (price_a - pos.entry_price_a) * pos.entry_shares_a \
-                    - (price_b - pos.entry_price_b) * pos.entry_shares_b
-            else:
-                pnl = -(price_a - pos.entry_price_a) * pos.entry_shares_a \
-                    + (price_b - pos.entry_price_b) * pos.entry_shares_b
-        else:
-            pnl = 0
-        total_unrealized += pnl
-        active.append(f"  {label}: z={z:+.2f} P&L=${pnl:+,.0f}")
-
-    gross = get_current_gross_exposure(positions, latest_prices)
-
-    # Get account info
+    # --- Account info ---
     try:
         account = get_account_info()
         equity = float(account["equity"])
@@ -568,34 +544,124 @@ def send_daily_summary(
         equity = 0
         cash = 0
 
-    # Avg slippage today
-    slip_note = ""
+    # --- Realized P&L from today's trades ---
+    exits = [t for t in DAILY_TRADES if t["action"] == "EXIT" and t.get("pnl") is not None]
+    entries = [t for t in DAILY_TRADES if t["action"] != "EXIT"]
+    total_realized_pnl = sum(t["pnl"] for t in exits)
+    wins = [t for t in exits if t["pnl"] >= 0]
+    losses = [t for t in exits if t["pnl"] < 0]
+    win_rate = (len(wins) / len(exits) * 100) if exits else 0
+
+    # Breakdown by exit reason
+    reason_counts = {}
+    for t in exits:
+        reason = t.get("exit_reason", "UNKNOWN")
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+    # Per-pair breakdown
+    pair_pnl = {}
+    for t in exits:
+        pair = t.get("pair", "?")
+        if pair not in pair_pnl:
+            pair_pnl[pair] = 0.0
+        pair_pnl[pair] += t["pnl"]
+
+    # --- Slippage ---
+    total_slippage = 0.0
+    slip_count = 0
     if SLIPPAGE_FILE.exists():
         try:
             sdf = pd.read_csv(SLIPPAGE_FILE)
             today_slips = sdf[sdf["timestamp"].str.startswith(today)]
             if not today_slips.empty:
-                avg_slip = today_slips[["slippage_a", "slippage_b"]].abs().mean().mean()
-                slip_note = f"\nAvg slippage: ${avg_slip:.4f}"
+                total_slippage = today_slips[["slippage_a", "slippage_b"]].abs().sum().sum()
+                slip_count = len(today_slips)
         except Exception:
             pass
+    # Also compute slippage from DAILY_TRADES fill vs signal prices
+    fill_slippage = 0.0
+    for t in DAILY_TRADES:
+        fill_a = t.get("fill_price_a", 0)
+        fill_b = t.get("fill_price_b", 0)
+        sig_a = t.get("signal_price_a", 0)
+        sig_b = t.get("signal_price_b", 0)
+        if fill_a > 0 and sig_a > 0:
+            fill_slippage += abs(fill_a - sig_a)
+        if fill_b > 0 and sig_b > 0:
+            fill_slippage += abs(fill_b - sig_b)
 
-    active_count = len(active)
-    positions_text = "\n".join(active[:10]) if active else "  None"
-    if active_count > 10:
-        positions_text += f"\n  ... +{active_count - 10} more"
+    # --- Active positions (should be 0 after EOD close) ---
+    active_positions = [p for p in positions if p.signal != 0]
 
-    msg = (
-        f"📊 <b>DAILY SUMMARY — {today}</b>\n\n"
-        f"Equity: ${equity:,.2f}\n"
-        f"Cash: ${cash:,.2f}\n"
-        f"Unrealized P&L: ${total_unrealized:+,.2f}\n"
-        f"Gross exposure: ${gross:,.0f} / ${MAX_GROSS_EXPOSURE:,.0f}\n"
-        f"Active positions: {active_count}\n\n"
-        f"<b>Positions:</b>\n{positions_text}"
-        f"{slip_note}"
-    )
+    # --- Build message ---
+    pnl_emoji = "🟢" if total_realized_pnl >= 0 else "🔴"
+
+    msg = f"📊 <b>DAILY RECAP — {today}</b>\n\n"
+
+    # Account
+    msg += f"<b>Account</b>\n"
+    msg += f"  Equity: ${equity:,.2f}\n"
+    msg += f"  Cash: ${cash:,.2f}\n\n"
+
+    # P&L
+    msg += f"<b>Realized P&L</b>\n"
+    msg += f"  {pnl_emoji} Total: ${total_realized_pnl:+,.2f}\n"
+    msg += f"  Trades: {len(exits)} exits, {len(entries)} entries\n"
+    msg += f"  Win rate: {win_rate:.0f}% ({len(wins)}W / {len(losses)}L)\n"
+
+    # Exit reasons
+    if reason_counts:
+        reasons_str = ", ".join(f"{r}: {c}" for r, c in sorted(reason_counts.items()))
+        msg += f"  Exit types: {reasons_str}\n"
+    msg += "\n"
+
+    # Per-pair breakdown
+    if pair_pnl:
+        msg += f"<b>Per-Pair P&L</b>\n"
+        for pair, pnl in sorted(pair_pnl.items(), key=lambda x: x[1]):
+            pair_emoji = "🟢" if pnl >= 0 else "🔴"
+            msg += f"  {pair_emoji} {pair}: ${pnl:+,.2f}\n"
+        msg += "\n"
+
+    # Slippage
+    msg += f"<b>Slippage</b>\n"
+    msg += f"  Total fill vs signal: ${fill_slippage:,.2f} ({len(DAILY_TRADES)} orders)\n"
+    if slip_count > 0:
+        msg += f"  Avg per order: ${total_slippage / slip_count:,.4f}\n"
+    msg += "\n"
+
+    # Remaining positions (should be empty after EOD)
+    if active_positions:
+        msg += f"⚠️ <b>{len(active_positions)} positions still open!</b>\n"
+        for pos in active_positions:
+            label = f"{pos.ticker_a}/{pos.ticker_b}"
+            msg += f"  {label} (signal={pos.signal}, bars={pos.bars_held})\n"
+        msg += "\n"
+
+    # Diagnostic flags
+    diagnostics = []
+    if len(losses) > len(wins) and len(exits) >= 3:
+        diagnostics.append("⚠️ More losses than wins today")
+    hard_stops = reason_counts.get("HARD_STOP", 0)
+    if hard_stops >= 2:
+        diagnostics.append(f"⚠️ {hard_stops} hard stops — check pair selection")
+    trailing_stops = reason_counts.get("TRAILING_STOP", 0)
+    if trailing_stops >= 3:
+        diagnostics.append(f"⚠️ {trailing_stops} trailing stops — possible choppy market")
+    if fill_slippage > 50:
+        diagnostics.append(f"⚠️ High slippage: ${fill_slippage:,.2f}")
+    if total_realized_pnl < -200:
+        diagnostics.append(f"🔴 Significant loss day — review pair performance")
+
+    if diagnostics:
+        msg += "<b>Diagnostics</b>\n"
+        for d in diagnostics:
+            msg += f"  {d}\n"
+
     send_telegram(msg)
+
+    # Reset daily trades for next day
+    DAILY_TRADES = []
 
 
 def format_signal_table(
@@ -928,10 +994,11 @@ def run_trader() -> None:
                 consecutive_errors = 0
                 continue
 
-            # Reset consecutive entry failures at start of each trading day
+            # Reset consecutive entry failures and daily trades at start of each trading day
             today_str = now_et.strftime("%Y-%m-%d")
             if last_trading_date != today_str:
                 last_trading_date = today_str
+                DAILY_TRADES.clear()
                 for pos in positions:
                     if pos.consecutive_entry_failures > 0:
                         log(f"  [RESET] {pos.ticker_a}/{pos.ticker_b} entry failures reset (was {pos.consecutive_entry_failures})")
@@ -944,6 +1011,13 @@ def run_trader() -> None:
                     if pos.signal != 0:
                         label = f"{pos.ticker_a}/{pos.ticker_b}"
                         z = 0.0  # z-score irrelevant for EOD forced close
+                        # Save entry prices before _force_exit resets shares
+                        saved_entry_price_a = pos.entry_price_a
+                        saved_entry_price_b = pos.entry_price_b
+                        saved_signal = pos.signal
+                        exit_shares_a = pos.entry_shares_a
+                        exit_shares_b = pos.entry_shares_b
+
                         action = pos._force_exit(z, "EOD_CLOSE")
                         action.update({
                             "pair": label,
@@ -952,16 +1026,60 @@ def run_trader() -> None:
                             "timestamp": now,
                             "sector": pos.sector,
                         })
+                        # Add current IEX prices for limit orders
+                        if pos.ticker_a in prices.columns and pos.ticker_b in prices.columns:
+                            action["price_a"] = prices[pos.ticker_a].iloc[-1]
+                            action["price_b"] = prices[pos.ticker_b].iloc[-1]
+
+                        trade_result = {"success": False, "fill_price_a": 0.0, "fill_price_b": 0.0}
                         try:
-                            execute_trade(action)
+                            trade_result = execute_trade(action)
                         except Exception as e:
                             log(f"  [ALPACA] EOD close error for {label}: {e}")
+
+                        # Compute P&L using actual fill prices
+                        trade_pnl = None
+                        if saved_entry_price_a > 0:
+                            fill_a = trade_result.get("fill_price_a", 0.0) or action.get("price_a", 0.0)
+                            fill_b = trade_result.get("fill_price_b", 0.0) or action.get("price_b", 0.0)
+                            if saved_signal == 1:  # was long A, short B
+                                trade_pnl = (fill_a - saved_entry_price_a) * exit_shares_a \
+                                    - (fill_b - saved_entry_price_b) * exit_shares_b
+                            else:  # was short A, long B
+                                trade_pnl = -(fill_a - saved_entry_price_a) * exit_shares_a \
+                                    + (fill_b - saved_entry_price_b) * exit_shares_b
+                            entry_cost = saved_entry_price_a * exit_shares_a \
+                                + saved_entry_price_b * exit_shares_b
+                            action["entry_cost"] = entry_cost
+                            pnl_emoji = "win" if trade_pnl >= 0 else "loss"
+                            log(f"  [P&L] {label}: {pnl_emoji} (${trade_pnl:+,.2f}) [EOD CLOSE]")
+                            if trade_pnl < 0:
+                                pos.consecutive_losses += 1
+                            else:
+                                pos.consecutive_losses = 0
+                            pos.entry_price_a = 0.0
+                            pos.entry_price_b = 0.0
+                            save_pair_pnl(positions)
+
+                        # Track for daily recap
+                        DAILY_TRADES.append({
+                            "pair": label,
+                            "action": "EXIT",
+                            "exit_reason": "EOD_CLOSE",
+                            "pnl": trade_pnl,
+                            "entry_cost": action.get("entry_cost", 0),
+                            "fill_price_a": trade_result.get("fill_price_a", 0),
+                            "fill_price_b": trade_result.get("fill_price_b", 0),
+                            "signal_price_a": action.get("price_a", 0),
+                            "signal_price_b": action.get("price_b", 0),
+                        })
+
                         log(f"  >>> EOD CLOSE: {label}")
+                        alert_trade(action, 0, pnl=trade_pnl)
                         eod_exits += 1
                 if eod_exits > 0:
                     log(f"  [EOD] Force-exited {eod_exits} positions before market close")
                     save_position_state(positions)
-                    alert_trade({"action": "EOD_CLOSE", "pair": f"{eod_exits} pairs"}, 0, pnl=None)
                 # Sleep until next market open
                 sleep_secs = _seconds_until_market_open()
                 hours = sleep_secs // 3600
@@ -1086,11 +1204,13 @@ def run_trader() -> None:
                         action["shares_short"] = shares_a
 
                     # Execute paper trade via Alpaca
-                    trade_ok = False
+                    trade_result = {"success": False, "fill_price_a": 0.0, "fill_price_b": 0.0}
                     try:
-                        trade_ok = execute_trade(action)
+                        trade_result = execute_trade(action)
                     except Exception as e:
                         log(f"  [ALPACA] Trade execution error: {e}")
+
+                    trade_ok = trade_result.get("success", False)
 
                     if not trade_ok and action["action"] != "EXIT":
                         # Entry failed — roll back PairPosition state
@@ -1108,22 +1228,32 @@ def run_trader() -> None:
                         pos.entry_shares_b = 0
                         continue  # skip logging this as a successful action
 
-                    # Successful entry — reset failure counter
+                    # Successful entry — store actual fill prices and reset failure counter
                     if action["action"] != "EXIT":
                         pos.consecutive_entry_failures = 0
+                        # Use actual fill prices if available, otherwise keep IEX prices
+                        fill_a = trade_result.get("fill_price_a", 0.0)
+                        fill_b = trade_result.get("fill_price_b", 0.0)
+                        if fill_a > 0:
+                            pos.entry_price_a = fill_a
+                        if fill_b > 0:
+                            pos.entry_price_b = fill_b
 
-                    # Track P&L on exits
+                    # Track P&L on exits using actual fill prices
                     trade_pnl = None
                     if action["action"] == "EXIT" and pos.entry_price_a > 0:
                         # Use shares from action dict (pos fields already reset by _force_exit)
                         exit_shares_a = action.get("exit_shares_a", 0)
                         exit_shares_b = action.get("exit_shares_b", 0)
+                        # Use actual fill prices from Alpaca, fall back to IEX quotes
+                        exit_fill_a = trade_result.get("fill_price_a", 0.0) or price_a
+                        exit_fill_b = trade_result.get("fill_price_b", 0.0) or price_b
                         if action.get("signal") == 1:  # was long A, short B
-                            trade_pnl = (price_a - pos.entry_price_a) * exit_shares_a \
-                                - (price_b - pos.entry_price_b) * exit_shares_b
+                            trade_pnl = (exit_fill_a - pos.entry_price_a) * exit_shares_a \
+                                - (exit_fill_b - pos.entry_price_b) * exit_shares_b
                         else:  # was short A, long B
-                            trade_pnl = -(price_a - pos.entry_price_a) * exit_shares_a \
-                                + (price_b - pos.entry_price_b) * exit_shares_b
+                            trade_pnl = -(exit_fill_a - pos.entry_price_a) * exit_shares_a \
+                                + (exit_fill_b - pos.entry_price_b) * exit_shares_b
                         # Store entry cost for % calculation
                         entry_cost = pos.entry_price_a * exit_shares_a \
                             + pos.entry_price_b * exit_shares_b
@@ -1137,6 +1267,19 @@ def run_trader() -> None:
                         pos.entry_price_a = 0.0
                         pos.entry_price_b = 0.0
                         save_pair_pnl(positions)
+
+                    # Track for daily recap
+                    DAILY_TRADES.append({
+                        "pair": action.get("pair", label),
+                        "action": action["action"],
+                        "exit_reason": action.get("exit_reason", ""),
+                        "pnl": trade_pnl,
+                        "entry_cost": action.get("entry_cost", 0),
+                        "fill_price_a": trade_result.get("fill_price_a", 0),
+                        "fill_price_b": trade_result.get("fill_price_b", 0),
+                        "signal_price_a": price_a,
+                        "signal_price_b": price_b,
+                    })
 
                     actions.append(action)
                     log_signal(action)
