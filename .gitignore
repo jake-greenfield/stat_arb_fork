@@ -9,3 +9,4 @@ build/
 venv/
 equity_curve.png
 .DS_Store
+CLAUDE.md
