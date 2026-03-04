@@ -56,7 +56,7 @@ WATCHLIST_THRESHOLD = 1.75  # only show pairs with |z| >= 1.75
 ZSCORE_HARD_STOP = 3.25    # force exit if |z| blows out past this
 TIME_STOP_BARS = 78        # 1 trading day (6.5hr session at 5-min bars) — intraday only
 COOLDOWN_BARS = 78         # 1 trading day cooldown after hard/time stop
-OPEN_COOLDOWN_MINUTES = 15 # skip new entries for first 15 min after market open (9:30 ET)
+OPEN_COOLDOWN_MINUTES = 30 # skip new entries for first 30 min after market open (9:30 ET)
 EOD_CLOSE_TIME = dtime(15, 45)   # force exit all positions at 3:45 PM ET
 EOD_NO_ENTRY_TIME = dtime(15, 30) # block new entries after 3:30 PM ET
 MAX_ENTRY_FAILURES = 3     # disable pair after this many consecutive failed entries
