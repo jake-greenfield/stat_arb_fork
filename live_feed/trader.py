@@ -1360,12 +1360,12 @@ def run_trader() -> None:
                 consecutive_errors = 0
                 continue
 
-            # Check if we're in the opening cooldown period (first 15 min after 9:30 ET)
+            # Check if we're in the opening cooldown period
             market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-            cooldown_end = now_et.replace(hour=9, minute=30 + OPEN_COOLDOWN_MINUTES, second=0, microsecond=0)
+            cooldown_end = market_open + pd.Timedelta(minutes=OPEN_COOLDOWN_MINUTES)
             in_open_cooldown = market_open <= now_et < cooldown_end
             if in_open_cooldown:
-                log(f"  Opening cooldown active until 9:{30 + OPEN_COOLDOWN_MINUTES} ET — no new entries")
+                log(f"  Opening cooldown active until {cooldown_end.strftime('%-I:%M %p')} ET — no new entries")
 
             # Block new entries after 3:30 PM ET (too close to EOD close)
             in_eod_no_entry = now_et.time() >= EOD_NO_ENTRY_TIME
